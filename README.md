@@ -1,5 +1,2 @@
-# Project 1 CSEE4119
+# Video ABR Proxy
 
-To get the newest version of starter code:
-
-		git pull origin master
