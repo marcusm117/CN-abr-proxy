@@ -136,7 +136,12 @@ def handle_thread(sock_client, addr):
             # initialize best bitrate if not stored
             if client_tp[ip][2] not in client_tp[ip][1]:
                 client_tp[ip][2] = client_tp[ip][1][0]
-                print("+ Update Best Bitrate to be " + str(client_tp[ip][1][0]))
+                print("+ Update Best Bitrate to be " + str(client_tp[ip][2]))
+            
+            # initializ tp if not stored
+            if client_tp[ip][0] == 0:
+                client_tp[ip][0] = client_tp[ip][1][0] * 1.5
+                print("+ Update EWMA tp to be " + str(client_tp[ip][0]))
 
             # modify request
             non_list_request = request.decode().replace('BigBuckBunny_6s.mpd', 'BigBuckBunny_6s_nolist.mpd').encode()
@@ -270,10 +275,10 @@ if __name__ == '__main__':
 
         # remember the EWMA, available bitrates, and best bitrate for a client IP
         if addr[0] not in client_tp.keys():
-            init_tp = 45515 * 1.5
-            bitrates = []
-            best_bitrate = 0
-            client_tp[addr[0]] = [45514 * 1.5, bitrates, best_bitrate]
+            init_tp = 0
+            init_bitrates = []
+            init_best_bitrate = 0
+            client_tp[addr[0]] = [init_tp, init_bitrates, init_best_bitrate]
         else:
             print("+ Client " + addr[0] + " has connected before")
             print("+ Client Info is " + str(client_tp[addr[0]]))
@@ -284,4 +289,4 @@ if __name__ == '__main__':
 
         # print number of active connections
         print(f"* Active Connections: {threading.active_count() - 1}")
-    
+
