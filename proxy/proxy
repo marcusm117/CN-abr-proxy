@@ -1,85 +1,244 @@
 #!/usr/bin/env python3.10
 
 import sys
+import threading
+import re
+import time
+import argparse
+import xml.etree.ElementTree
 from socket import *
 BUFFER_SIZE = 4096
 
 
+
+
+def parse_http_request():
+    pass
+
+
+# t_start is the start time of the measurement
+# t_final is the end time of the measurement
+# size is the size of the chunk
+# return a new throughput measurement
+def calculate_throughput(t_start, t_final, size):
+    throughput = size / (t_final - t_start)
+    return throughput
+
+
+# tp_current is the current throughput
+# tp_new is the a throughput measurement
+# alpha is the weight we give the new throughput
+# return the updated tp_throughput using EWMA
+def calculate_EWMA_throuput(tp_current, tp_new, alpha):
+    tp_current = alpha * tp_new + (1 - alpha) * tp_current
+    return tp_current
+
+
+# tp_current is the current throughput
+# return the current highest possible bitrate
+def select_best_bitrate(tp_current, bitrates):
+    max_bitrate = tp_current / 1.5
+    bitrates = [45515, 176827, 506300, 1006743]
+    best_bitrate = bitrates[0]
+
+    for i in range(1,4):
+        if bitrates[i] < max_bitrate and bitrates[i] > best_bitrate:
+            best_bitrate = bitrates[i]
+    
+    return best_bitrate
+
+
+
+
+# receive, manipulate, & send data in a thread
+def handle_thread(sock_client, addr, fake_ip, server_ip, alpha, log):
+
+    # a client is connected
+    print("* Connected to Client " + str(addr))
+
+    # creat a socket to forward to server
+    sock_server = socket(AF_INET, SOCK_STREAM)
+    sock_server.bind((fake_ip, 0))
+    sock_server.connect((server_ip, 8080))
+
+    print("* Connected to Server " + "(" + server_ip + " : 8080)")
+    print("* Proxy is ready to forward")
+
+    
+    # receive mpd request from client
+    try:
+        mpd_request = sock_client.recv(BUFFER_SIZE)
+        if len(mpd_request) == 0:
+            print ("! Client is down")
+            sock_client.close()
+            sock_server.close()
+            print("! Disonnected to Client " + str(addr))
+            print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+            print(f"* Active Connections: {threading.active_count() - 2}")
+            return
+    except ConnectionError:
+        print("! Client is down")
+        sock_client.close()
+        sock_server.close()
+        print("! Disonnected to Client " + str(addr))
+        print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+        print(f"* Active Connections: {threading.active_count() - 2}")
+        return
+
+
+    # request and receive non_list mpd from server
+    non_list_mpd_request = mpd_request.decode().replace('.mpd', '_nonlist.mpd').encode()
+
+    sock_server.send(non_list_mpd_request)
+    try:
+        non_list_mpd = sock_server.recv(BUFFER_SIZE)
+        if len(non_list_mpd) == 0:
+            print("! Server is down")
+            sock_client.close()
+            sock_server.close()
+            print("! Disonnected to Client " + str(addr))
+            print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+            print(f"* Active Connections: {threading.active_count() - 2}")
+            return
+    except ConnectionError:
+        print("! Server is down")
+        sock_client.close()
+        sock_server.close()
+        print("! Disonnected to Client " + str(addr))
+        print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+        print(f"* Active Connections: {threading.active_count() - 2}")
+        return
+    
+
+    t_start = time.time()
+
+    # request and receive mpd from server
+    sock_server.send(mpd_request)
+    try:
+        mpd = sock_server.recv(BUFFER_SIZE)
+        if len(mpd) == 0:
+            print("! Server is down")
+            sock_client.close()
+            sock_server.close()
+            print("! Disonnected to Client " + str(addr))
+            print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+            print(f"* Active Connections: {threading.active_count() - 2}")
+            return
+    except ConnectionError:
+        print("! Server is down")
+        sock_client.close()
+        sock_server.close()
+        print("! Disonnected to Client " + str(addr))
+        print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+        print(f"* Active Connections: {threading.active_count() - 2}")
+        return
+
+    t_final = time.time()
+
+
+    # select best bitrate
+    size = 100 * 8
+    chunkname = "xxx"
+    bitrates = []
+    tp_current = 45515 * 1.5
+    tp_new = calculate_throughput(t_start, t_final, size)
+    tp_current = calculate_EWMA_throuput(tp_current, tp_new, alpha)
+    best_bitrate = select_best_bitrate(tp_current, bitrates)
+    log.write("%f %f %f %f %d %s %s\n" % (t_final + t_final-t_start + tp_new + tp_current, best_bitrate/1000, server_ip, chunkname))
+
+
+    # send back non_list mpd to client
+    sock_client.send(non_list_mpd)
+
+
+    while True:
+        # receive chunk request from client
+        try:
+            chunk_request = sock_client.recv(BUFFER_SIZE)
+            if len(chunk_request) == 0:
+                print ("! Client is down")
+                break
+        except ConnectionError:
+            print("! Client is down")
+            break
+
+
+        # modify the chunk request
+        abr_chunk_request = chunk_request.decode().replace('45515', best_bitrate).encode()
+
+
+        t_start = time.time()
+
+        # request and receive chunk from server
+        sock_server.send(abr_chunk_request)
+        try:
+            chunk = sock_server.recv(BUFFER_SIZE)
+            if len(chunk) == 0:
+                print("! Server is down")
+                break
+        except ConnectionError:
+            print("! Server is down")
+            break
+
+        t_final = time.time()
+
+
+        # send back chunk to client
+        sock_client.send(chunk)
+
+
+        # select best bitrate
+        size = 100 * 8
+        chunkname = "xxx"
+        tp_current = 45515 * 1.5
+        tp_new = calculate_throughput(t_start, t_final, size)
+        tp_current = calculate_EWMA_throuput(tp_current, tp_new, alpha)
+        best_bitrate = select_best_bitrate(tp_current, bitrates)
+        log.write("%f %f %f %f %d %s %s\n" % (t_final + t_final-t_start + tp_new + tp_current, best_bitrate/1000, server_ip, chunkname))
+
+
+    # close connection to both current client and socket
+    sock_client.close()
+    sock_server.close()
+    print("! Disonnected to Client " + str(addr))
+    print("! Disonnected to Server " + "(" + server_ip + " : 8080)")
+    print(f"* Active Connections: {threading.active_count() - 2}")
+
+
+
+
+
 if __name__ == '__main__':
 
-    listen_port = int(sys.argv[1])
-    fake_ip = sys.argv[2]
-    server_ip = sys.argv[3]
+    log_path = sys.argv[1]
+    alpha = int(sys.argv[2])
+    listen_port = int(sys.argv[3])
+    fake_ip = sys.argv[4]
+    server_ip = sys.argv[5]
+
+    # wirte to log file
+    log = open(log_path, 'w')
 
     # creat a welcome socket to listen for client
     sock_welcome = socket(AF_INET, SOCK_STREAM)
-    sock_welcome.bind(('', listen_port))
-    sock_welcome.listen(1)
+    sock_welcome.bind(("", listen_port))
 
-    print('* Proxy is ready to receive')
+    # listen for multiple clients
+    sock_welcome.listen(10000)
+
+    print("* Proxy is ready for Clients")
 
 
     while True:
 
         # creat the connection socket to receive from client
-        sock_receive, addr = sock_welcome.accept()
+        sock_client, addr = sock_welcome.accept()
 
-        # creat a socket to forward to server
-        sock_forward = socket(AF_INET, SOCK_STREAM)
-        sock_forward.bind((fake_ip, 0))
-        sock_forward.connect((server_ip, 8080))
+        # start a new thread for a new client
+        thread = threading.Thread(target=handle_thread, args=(sock_client, addr, fake_ip, server_ip, alpha, log))
+        thread.start()
 
-        print('* Proxy is ready to forward')
-
-        
-        while True:
-            try:
-                message_to = sock_receive.recv(BUFFER_SIZE)
-            except ConnectionError:
-                print("! Client terminal is down")
-                break
-
-            # handle disconnection from the client
-            if len(message_to) == 0:
-                break
-
-            # handle buffer overflow
-            while not message_to.decode().endswith('\n'):
-                message_to = message_to + sock_receive.recv(BUFFER_SIZE)
-
-            # forward the message to the server
-            sock_forward.send(message_to)
-
-            print("* Proxy forwarded: " + message_to.decode().strip('\n')
-                                    + " from " + str(addr))
-
-            try:
-                message_back = sock_forward.recv(BUFFER_SIZE)
-            except ConnectionError:
-                print("! Server terminal is down")
-                break
-
-            # handle disconnection from the server
-            if len(message_back) == 0:
-                break
-
-            # handle buffer overflow
-            while not message_back.decode().endswith('\n'):
-                message_back = message_back + sock_forward.recv(BUFFER_SIZE)
-        
-            # send back response messge to the client
-            sock_receive.send(message_back)
-
-            print("* Proxy send back: " + message_back.decode().strip('\n')
-                                    + " from the server")
-        
-
-        # close connection to both current client and socket
-        sock_receive.close()
-        sock_forward.close()
-
-        print("! Connections to the current client and server are both closed")
-        print("* Proxy is ready to handle the next client")
-
-
+        # print number of active connections
+        print(f"* Active Connections: {threading.active_count() - 1}")
+    
 
