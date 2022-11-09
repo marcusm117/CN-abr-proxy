@@ -7,8 +7,7 @@ import time
 import argparse
 import xml.etree.ElementTree
 from socket import *
-BUFFER_SIZE = 4096 * 10000
-ALPHA = 0.5
+BUFFER_SIZE = 4096
 
 
 
@@ -25,12 +24,25 @@ def parse_filetype(request):
         return "other"
 
 
+# parse available bitrates from mpd
+def parse_bitrates(response):
+    bitrate_strings = re.findall('bandwidth="[0-9]+"', response)
+    bitrates = []
+    for string in bitrate_strings:
+        bitrate = int(re.findall('[0-9]+', string)[0])
+        bitrates.append(bitrate)
+    return bitrates
+
+
 # parse content length of a server response
 def parse_length(response):
-    params = response.split("\r\n")
-    length_line = params[6]
+    for i in range(len(response)):
+        if response[i:i+4].decode() == ("\r\n\r\n"):
+            header = response[:i+4].decode()
+            break
+    length_line = re.findall('Content-Length: [0-9]+', header)[0]
     length = int(re.findall('[0-9]+', length_line)[0])
-    return length
+    return length, len(header)
 
 
 # set bitrate to the best in a .m4s request
@@ -41,8 +53,8 @@ def request_best_bitrate(request, best_bitrate):
 
 
 # return the updated current throughput using EWMA
-def calculate_EWMA_tp(tp_cur, tp_new):
-    tp_cur = ALPHA * tp_new + (1 - ALPHA) * tp_cur
+def calculate_EWMA_tp(tp_cur, tp_new, alpha):
+    tp_cur = alpha * tp_new + (1 - alpha) * tp_cur
     return tp_cur
 
 
@@ -60,12 +72,16 @@ def select_best_bitrate(tp_cur, bitrates):
     return best_bitrate
 
 
+
+
 # for each thread
 def handle_thread(sock_client, addr):
 
     # dict client_tp and file log are global variables
     global client_tp
     global log
+    global alpha
+    ip = addr[0]
     
     # a client is connected
     print("* Connected to Client " + str(addr))
@@ -75,13 +91,11 @@ def handle_thread(sock_client, addr):
     sock_server.bind((fake_ip, 0))
     sock_server.connect((server_ip, 8080))
 
-    print("* Connected to Server " + "(" + server_ip + " , 8080)")
-    print("* Proxy is ready to forward")
+    print("* Connected to Server " + "(" + str(server_ip) + " , 8080)")
+    print("* Proxy is ready to serve")
+    print("------------------------------------------------------------")
 
-    bitrates = [45514, 176827, 506300, 1006743]
-    best_bitrate = bitrates[0]
-
-
+    
     while True:
 
         # receive request from client
@@ -95,16 +109,39 @@ def handle_thread(sock_client, addr):
             break
 
         
+        # get filetype
         filetype = parse_filetype(request.decode())
         
 
         # handle mpd requests
         if filetype == 'mpd':
 
+            # request mpd from server
+            sock_server.send(request)
+            try:
+                response = sock_server.recv(BUFFER_SIZE)
+                if len(response) == 0:
+                    print("! Server is down")
+                    break
+            except ConnectionError:
+                print("! Server is down")
+                break
+
+            # get available bitrates
+            bitrates = parse_bitrates(response.decode())
+            if client_tp[ip][1] != bitrates:
+                client_tp[ip][1] = bitrates
+                print("+ Update available Bitrates " + str(client_tp[ip][1]))
+
+            # initialize best bitrate if not stored
+            if client_tp[ip][2] not in client_tp[ip][1]:
+                client_tp[ip][2] = client_tp[ip][1][0]
+                print("+ Update Best Bitrate to be " + str(client_tp[ip][1][0]))
+
             # modify request
             non_list_request = request.decode().replace('BigBuckBunny_6s.mpd', 'BigBuckBunny_6s_nolist.mpd').encode()
             
-            # request from server and send back to client
+            # request no_lsit mpd from server and send back to client
             sock_server.send(non_list_request)
             try:
                 response = sock_server.recv(BUFFER_SIZE)
@@ -121,13 +158,15 @@ def handle_thread(sock_client, addr):
 
         # handle m4s requests
         elif filetype == 'chunk':
+
+            # start timer
             t_start = time.time()
 
             # modify request
-            abr_request, chunkname = request_best_bitrate(request.decode(), best_bitrate)
+            abr_request, chunkname = request_best_bitrate(request.decode(), client_tp[ip][2])
             abr_request = abr_request.encode()
 
-            # request from server and send back to client
+            # request m4s from server
             sock_server.send(abr_request)
             try:
                 response = sock_server.recv(BUFFER_SIZE)
@@ -137,28 +176,40 @@ def handle_thread(sock_client, addr):
             except ConnectionError:
                 print("! Server is down")
                 break
-            t_final = time.time()
+            
+            # get payload length and header length
+            length, header_length = parse_length(response)
+            print("Length of " + chunkname + " is " + str(length))
 
+            # handle buffer overflow
+            while len(response) < length + header_length:
+                response = response + sock_server.recv(BUFFER_SIZE)
+            
+            # end timer
+            t_final = time.time()
+            print("Length of the response is " + str(len(response)))
+
+            # send back to server
             sock_client.send(response)
             print("Send back " + chunkname + " to Client " + str(addr))
 
             # calculate new tp
-            length = parse_length(response[:267].decode())
-            print("Length of " + chunkname + " is " + str(length))
             durtaion = t_final - t_start
             print("Duration of " + chunkname + " is " + str(durtaion))
             tp_new = (8 * length) / durtaion
 
             # update EWMA tp
-            client_tp[addr] = calculate_EWMA_tp(client_tp[addr], tp_new)
-            print("EWMA Throughput is updated to be " + str(client_tp[addr]))
+            client_tp[ip][0] = calculate_EWMA_tp(client_tp[ip][0], tp_new, alpha)
+            print("EWMA Throughput is updated to be " + str(client_tp[ip][0]))
 
-            # update best bitrate
-            best_bitrate = select_best_bitrate(client_tp[addr], bitrates)
-            print("Best Bitrate is set to be " + str(best_bitrate))
+            # write to log
+            log.write('%f %f %f %f %d %s %s\n' % (t_final, durtaion, tp_new/1000, client_tp[ip][0]/1000, round(client_tp[ip][2]/1000), server_ip, chunkname))
+            log.flush()
 
-            # writie to log
-            log.write('%f %f %f %f %d %s %s\n' % (t_final, durtaion, tp_new/1000, client_tp[addr]/1000, best_bitrate/1000, server_ip, chunkname))
+            # update best bitrateS
+            client_tp[ip][2] = select_best_bitrate(client_tp[ip][0], client_tp[ip][1])
+            print("Best Bitrate is set to be " + str(client_tp[ip][2]))
+            print("------------------------------------------------------------")
 
 
         # handle html, js, or other requests
@@ -189,17 +240,18 @@ def handle_thread(sock_client, addr):
 
 
 if __name__ == '__main__':
-    # dict to record clients throughput data
+    # dict to record a clients' network info
     client_tp = {}
 
     log_path = sys.argv[1]
-    ALPHA = float(sys.argv[2])
+    alpha = float(sys.argv[2])
     listen_port = int(sys.argv[3])
     fake_ip = sys.argv[4]
     server_ip = sys.argv[5]
+    print("Alpah is set to be " + str(alpha))
 
-    # file to record logging info
-    log = open(log_path, 'w')
+    # file to record loggin information
+    log = open(log_path,'w')
 
     # creat a welcome socket to listen for client
     sock_welcome = socket(AF_INET, SOCK_STREAM)
@@ -215,7 +267,16 @@ if __name__ == '__main__':
 
         # create the connection socket to the client
         sock_client, addr = sock_welcome.accept()
-        client_tp[addr] = 45514 * 1.5
+
+        # remember the EWMA, available bitrates, and best bitrate for a client IP
+        if addr[0] not in client_tp.keys():
+            init_tp = 45515 * 1.5
+            bitrates = []
+            best_bitrate = 0
+            client_tp[addr[0]] = [45514 * 1.5, bitrates, best_bitrate]
+        else:
+            print("+ Client " + addr[0] + " has connected before")
+            print("+ Client Info is " + str(client_tp[addr[0]]))
 
         # start a new threadS for this new client
         thread = threading.Thread(target=handle_thread, args=(sock_client, addr))
@@ -223,3 +284,4 @@ if __name__ == '__main__':
 
         # print number of active connections
         print(f"* Active Connections: {threading.active_count() - 1}")
+    
