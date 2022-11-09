@@ -3,3 +3,5 @@ plot/*.png
 proxy/proxy.py
 *.log
 writeup.docx
+writeup.pdf
+proxy/test_results
