@@ -1,0 +1,82 @@
+#!/usr/bin/env python3.10
+
+import sys
+from socket import *
+BUFFER_SIZE = 4096
+
+
+if __name__ == '__main__':
+
+    listen_port = int(sys.argv[1])
+    fake_ip = sys.argv[2]
+    server_ip = sys.argv[3]
+
+    # creat a welcome socket to listen for client
+    sock_welcome = socket(AF_INET, SOCK_STREAM)
+    sock_welcome.bind(('', listen_port))
+    sock_welcome.listen(1)
+
+    print('* Proxy is ready to receive')
+
+
+    while True:
+
+        # creat the connection socket to receive from client
+        sock_receive, addr = sock_welcome.accept()
+
+        # creat a socket to forward to server
+        sock_forward = socket(AF_INET, SOCK_STREAM)
+        sock_forward.bind((fake_ip, 0))
+        sock_forward.connect((server_ip, 8080))
+
+        print('* Proxy is ready to forward')
+
+        
+        while True:
+            try:
+                message_to = sock_receive.recv(BUFFER_SIZE)
+            except ConnectionError:
+                print("! Client terminal is down")
+                break
+
+            # handle disconnection from the client
+            if len(message_to) == 0:
+                break
+
+            # handle buffer overflow
+            while not message_to.decode().endswith('\n'):
+                message_to = message_to + sock_receive.recv(BUFFER_SIZE)
+
+            # forward the message to the server
+            sock_forward.send(message_to)
+
+            print("* Proxy forwarded: " + message_to.decode().strip('\n')
+                                    + " from " + str(addr))
+
+            try:
+                message_back = sock_forward.recv(BUFFER_SIZE)
+            except ConnectionError:
+                print("! Server terminal is down")
+                break
+
+            # handle disconnection from the server
+            if len(message_back) == 0:
+                break
+
+            # handle buffer overflow
+            while not message_back.decode().endswith('\n'):
+                message_back = message_back + sock_forward.recv(BUFFER_SIZE)
+        
+            # send back response messge to the client
+            sock_receive.send(message_back)
+
+            print("* Proxy send back: " + message_back.decode().strip('\n')
+                                    + " from the server")
+        
+
+        # close connection to both current client and socket
+        sock_receive.close()
+        sock_forward.close()
+
+        print("! Connections to the current client and server are both closed")
+        print("* Proxy is ready to handle the next client")
