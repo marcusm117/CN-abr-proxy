@@ -77,11 +77,12 @@ def select_best_bitrate(tp_cur, bitrates):
 # for each thread
 def handle_thread(sock_client, addr):
 
-    # dict client_tp and file log are global variables
+    # dict client_tp, file log, alpha, server_ip are global variables
     global client_tp
     global log
     global alpha
-    ip = addr[0]
+    global server_ip
+    pair = (addr[0], server_ip)
     
     # a client is connected
     print("* Connected to Client " + str(addr))
@@ -129,19 +130,19 @@ def handle_thread(sock_client, addr):
 
             # get available bitrates
             bitrates = parse_bitrates(response.decode())
-            if client_tp[ip][1] != bitrates:
-                client_tp[ip][1] = bitrates
-                print("+ Update available Bitrates " + str(client_tp[ip][1]))
+            if client_tp[pair][1] != bitrates:
+                client_tp[pair][1] = bitrates
+                print("+ Update available Bitrates " + str(client_tp[pair][1]))
 
             # initialize best bitrate if not stored
-            if client_tp[ip][2] not in client_tp[ip][1]:
-                client_tp[ip][2] = client_tp[ip][1][0]
-                print("+ Update Best Bitrate to be " + str(client_tp[ip][2]))
+            if client_tp[pair][2] not in client_tp[pair][1]:
+                client_tp[pair][2] = client_tp[pair][1][0]
+                print("+ Update Best Bitrate to be " + str(client_tp[pair][2]))
             
             # initializ tp if not stored
-            if client_tp[ip][0] == 0:
-                client_tp[ip][0] = client_tp[ip][1][0] * 1.5
-                print("+ Update EWMA tp to be " + str(client_tp[ip][0]))
+            if client_tp[pair][0] == 0:
+                client_tp[pair][0] = client_tp[pair][1][0] * 1.5
+                print("+ Update EWMA tp to be " + str(client_tp[pair][0]))
 
             # modify request
             non_list_request = request.decode().replace('BigBuckBunny_6s.mpd', 'BigBuckBunny_6s_nolist.mpd').encode()
@@ -168,7 +169,7 @@ def handle_thread(sock_client, addr):
             t_start = time.time()
 
             # modify request
-            abr_request, chunkname = request_best_bitrate(request.decode(), client_tp[ip][2])
+            abr_request, chunkname = request_best_bitrate(request.decode(), client_tp[pair][2])
             abr_request = abr_request.encode()
 
             # request m4s from server
@@ -204,16 +205,16 @@ def handle_thread(sock_client, addr):
             tp_new = (8 * length) / durtaion
 
             # update EWMA tp
-            client_tp[ip][0] = calculate_EWMA_tp(client_tp[ip][0], tp_new, alpha)
-            print("EWMA Throughput is updated to be " + str(client_tp[ip][0]))
+            client_tp[pair][0] = calculate_EWMA_tp(client_tp[pair][0], tp_new, alpha)
+            print("EWMA Throughput is updated to be " + str(client_tp[pair][0]))
 
             # write to log
-            log.write('%f %f %f %f %d %s %s\n' % (t_final, durtaion, tp_new/1000, client_tp[ip][0]/1000, round(client_tp[ip][2]/1000), server_ip, chunkname))
+            log.write('%f %f %f %f %d %s %s\n' % (t_final, durtaion, tp_new/1000, client_tp[pair][0]/1000, round(client_tp[pair][2]/1000), server_ip, chunkname))
             log.flush()
 
             # update best bitrateS
-            client_tp[ip][2] = select_best_bitrate(client_tp[ip][0], client_tp[ip][1])
-            print("Best Bitrate is set to be " + str(client_tp[ip][2]))
+            client_tp[pair][2] = select_best_bitrate(client_tp[pair][0], client_tp[pair][1])
+            print("Best Bitrate is set to be " + str(client_tp[pair][2]))
             print("------------------------------------------------------------")
 
 
@@ -239,6 +240,7 @@ def handle_thread(sock_client, addr):
     sock_client.close()
     sock_server.close()
     print("! Connections to the current client and server are both closed")
+    print(f"* Active Connections: {threading.active_count() - 2}")
     print("* Proxy is ready to handle the next client")
 
 
@@ -273,15 +275,17 @@ if __name__ == '__main__':
         # create the connection socket to the client
         sock_client, addr = sock_welcome.accept()
 
-        # remember the EWMA, available bitrates, and best bitrate for a client IP
-        if addr[0] not in client_tp.keys():
+        # remember the EWMA, available bitrates, and best bitrate for a client-server IP pair
+        pair = (addr[0], server_ip)
+        if pair not in client_tp.keys():
             init_tp = 0
             init_bitrates = []
             init_best_bitrate = 0
-            client_tp[addr[0]] = [init_tp, init_bitrates, init_best_bitrate]
+            client_tp[pair] = [init_tp, init_bitrates, init_best_bitrate]
+            print("+ Client-Server Pair " + str(pair) + " will be connected for the first time")
         else:
-            print("+ Client " + addr[0] + " has connected before")
-            print("+ Client Info is " + str(client_tp[addr[0]]))
+            print("+ Client-Server Pair " + str(pair) + " has connected before")
+            print("+ Client-Server Pair Info is " + str(client_tp[pair]))
 
         # start a new threadS for this new client
         thread = threading.Thread(target=handle_thread, args=(sock_client, addr))
