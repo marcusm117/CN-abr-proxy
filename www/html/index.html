@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Adaptive Streaming in HTML5</title>
+    <style>
+        video {
+        width: 1280px;
+        height: 720px;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <h1>Adaptive Streaming with HTML5</h1>
+        <video id="videoPlayer" controls></video>
+    <div>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>    
+    <!-- DASH-AVC/265 reference implementation -->
+    <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+    <script>
+    <!--setup the video element and attach it to the Dash player-->
+            (function(){
+                var loc = window.location.host
+                console.log(loc)
+                var url = "http://"+loc+"/BigBuckBunny_6s.mpd"
+                console.log(url)
+                var player = dashjs.MediaPlayer().create();
+                player.initialize(document.querySelector("#videoPlayer"), url, true);
+            })();
+    </script>
+</body>
+</html>
+
