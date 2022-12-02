@@ -1,3 +1,3 @@
 # Video Streaming ABR Proxy
 
-testing files in the folder www
+testing files in the folder www/html
